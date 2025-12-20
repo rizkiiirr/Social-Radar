@@ -39,14 +39,17 @@ DB_FILE = "social_radar_olap.duckdb"
 # 2. FUNGSI INISIALISASI DATABASE (AUTO-FIX)
 # ==========================================
 def init_db():
-    if not os.path.exists("hasil_survey.csv") or not os.path.exists("social_time_rules.csv"):
-        st.error("❌ File CSV tidak ditemukan!")
-        st.stop()
+    # Cek kelengkapan file
+    required_files = ["hasil_survey.csv", "social_time_rules.csv"]
+    for f in required_files:
+        if not os.path.exists(f):
+            st.error(f"❌ File {f} tidak ditemukan!")
+            st.stop()
 
-    with st.spinner('⚙️ Membangun Ulang Knowledge Base & Peta Lokasi...'):
+    with st.spinner('⚙️ Membangun Ulang Database & Parsing Data OSM...'):
         con = duckdb.connect(DB_FILE)
         
-        # --- A. LOAD RAW DATA ---
+        # --- A. LOAD DATA SURVEY & RULES (Tetap Sama) ---
         with open("hasil_survey.csv", "r", encoding='utf-8') as f:
             lines = f.readlines()
         cleaned = [l.strip()[1:-1].replace('""', '"') if l.strip().startswith('"') else l.strip() for l in lines]
@@ -58,12 +61,11 @@ def init_db():
         cleaned_r = [l.strip()[1:-1].replace('""', '"') if l.strip().startswith('"') else l.strip() for l in lines_r]
         con.register('temp_rules', pd.read_csv(io.StringIO("\n".join(cleaned_r))))
         con.execute("CREATE OR REPLACE TABLE tb_rules AS SELECT * FROM temp_rules")
-
-        # 🔥 BAGIAN YANG HILANG (WAJIB DITAMBAHKAN) 🔥
-        # Membuat View v_time_rules agar bisa dibaca oleh fungsi get_time_context
+        
+        # Buat View Waktu
         con.execute("CREATE OR REPLACE VIEW v_time_rules AS SELECT * FROM tb_rules")
 
-        # --- B. VIEW MAPPING CIRI FISIK ---
+        # --- B. VIEW MAPPING & LOKASI PEREMPUAN (Tetap Sama) ---
         con.execute("""
             CREATE OR REPLACE VIEW v_trait_mapping AS 
             SELECT 'Intellectual' as archetype, intel_fisik_cowo as traits FROM tb_survey WHERE intel_fisik_cowo IS NOT NULL
@@ -75,7 +77,6 @@ def init_db():
             UNION ALL SELECT 'Active', active_fisik_cowo FROM tb_survey WHERE active_fisik_cowo IS NOT NULL
         """)
 
-        # --- C. VIEW LOKASI PEREMPUAN ---
         con.execute("""
             CREATE OR REPLACE VIEW v_female_locations AS
             SELECT 'Intellectual' as archetype, intel_lokasi as lokasi FROM tb_survey WHERE gender = 'Perempuan' AND intel_lokasi IS NOT NULL
@@ -87,24 +88,54 @@ def init_db():
             UNION ALL SELECT 'Active', active_lokasi FROM tb_survey WHERE gender = 'Perempuan' AND active_lokasi IS NOT NULL
         """)
 
-        # --- D. DATABASE KOORDINAT BANJARMASIN ---
-        con.execute("""
-            CREATE OR REPLACE TABLE dim_gps (nama_tempat VARCHAR, lat DOUBLE, lon DOUBLE);
-            INSERT INTO dim_gps VALUES 
-            ('Kampus', -3.2980, 114.5820), ('ULM', -3.2980, 114.5820), ('Unlam', -3.2980, 114.5820),
-            ('Perpustakaan', -3.3321, 114.6050), ('Perpus', -3.3321, 114.6050), ('Palnam', -3.3321, 114.6050),
-            ('Siring', -3.3204, 114.5910), ('Menara Pandang', -3.3204, 114.5910), ('Tendean', -3.3204, 114.5910),
-            ('Duta Mall', -3.3285, 114.5982), ('DM', -3.3285, 114.5982), ('XXI', -3.3285, 114.5982),
-            ('Taman Kamboja', -3.3245, 114.5890), ('Kamboja', -3.3245, 114.5890),
-            ('Toko Buku', -3.3250, 114.5920), ('Gramedia', -3.3250, 114.5920),
-            ('Cafe', -3.3150, 114.5950), ('Kopi', -3.3150, 114.5950), ('Nongkrong', -3.3150, 114.5950),
-            ('Masjid', -3.3260, 114.5960), ('Sabilal', -3.3260, 114.5960), ('Raya', -3.3260, 114.5960),
-            ('Gym', -3.3350, 114.6000), ('Studio', -3.3350, 114.6000),
-            ('Art Gallery', -3.3290, 114.5900), ('Taman Budaya', -3.3290, 114.5900),
-            ('Pasar', -3.3230, 114.5850), ('Thrift', -3.3230, 114.5850)
-        """)
+        # --- C. LOAD DATA OSM JSON (INTEGRASI BARU) ---
+        if os.path.exists("lokasi_bjm.json"):
+            import json
+            with open("lokasi_bjm.json", 'r', encoding='utf-8') as f:
+                data_osm = json.load(f)
+            
+            osm_places = []
+            # Parsing format Overpass JSON
+            elements = data_osm.get('elements', [])
+            for el in elements:
+                tags = el.get('tags', {})
+                name = tags.get('name')
+                
+                # Kita butuh tempat yang ada namanya
+                if name:
+                    # Ambil Kategori (Amenity/Shop/Leisure)
+                    kategori = tags.get('amenity') or tags.get('shop') or tags.get('leisure') or tags.get('tourism') or 'unknown'
+                    
+                    # Ambil Koordinat (Node vs Way)
+                    lat = el.get('lat')
+                    lon = el.get('lon')
+                    
+                    # Jika tipe 'way' (bangunan), biasanya koordinat ada di 'center' (jika diexport dengan center)
+                    # atau kita skip jika tidak ada lat/lon langsung (untuk penyederhanaan)
+                    if not lat and 'center' in el:
+                        lat = el['center']['lat']
+                        lon = el['center']['lon']
+                    
+                    if lat and lon:
+                        osm_places.append({
+                            'nama_tempat': name,
+                            'lat': lat,
+                            'lon': lon,
+                            'kategori': kategori
+                        })
+            
+            if osm_places:
+                df_osm = pd.DataFrame(osm_places)
+                con.register('temp_osm', df_osm)
+                con.execute("CREATE OR REPLACE TABLE dim_gps AS SELECT nama_tempat, lat, lon, kategori FROM temp_osm")
+            else:
+                # Fallback jika JSON kosong/format salah
+                con.execute("CREATE OR REPLACE TABLE dim_gps (nama_tempat VARCHAR, lat DOUBLE, lon DOUBLE, kategori VARCHAR)")
+        else:
+            st.warning("⚠️ File 'lokasi_bjm.json' belum ada. Menggunakan mode minimal.")
+            con.execute("CREATE OR REPLACE TABLE dim_gps (nama_tempat VARCHAR, lat DOUBLE, lon DOUBLE, kategori VARCHAR)")
 
-        # --- E. VIEW TRAITS ---
+        # --- D. VIEW TRAITS ---
         con.execute("""
             CREATE OR REPLACE VIEW v_dim_traits AS
             SELECT DISTINCT unnest(str_split(intel_fisik_cowo, ', ')) as nilai 
@@ -112,7 +143,7 @@ def init_db():
         """)
 
         con.close()
-        st.success("✅ Database Siap! Reset Selesai.")
+        st.success("✅ Database & Peta OSM Siap!")
 
 # --- CHECK OTOMATIS SAAT STARTUP ---
 if not os.path.exists(DB_FILE):
@@ -189,53 +220,81 @@ def cari_target(ciri_input, context_waktu=None):
             items = [x.strip() for x in str(raw).split(',')]
             all_locations.extend(items)
             
-        # --- LOGIC BARU: FILTER BERDASARKAN WAKTU ---
-        final_locations = all_locations # Default: semua lokasi
-        
+        # LOGIC FILTER WAKTU
+        final_locations = all_locations 
         if context_waktu is not None:
-            # Ambil daftar tempat yang valid di jam ini (dari Rules CSV)
-            # Contoh Malam Minggu: "Cafe, Mall, Taman Kota, Thrift Shop"
             allowed_places = [x.strip().lower() for x in str(context_waktu['rekomendasi_prioritas']).split(',')]
-            
-            # Filter: Hanya ambil lokasi survey yang ADA di daftar Allowed Places
-            # Contoh: Intellectual suka [Perpus, Cafe, Taman]. 
-            #         Malam Minggu boleh [Cafe, Mall].
-            #         Irisan: [Cafe]. (Perpus dibuang).
-            
             filtered = []
             for loc in all_locations:
-                # Cek fuzzy match (misal "Cafe Sunyi" cocok dengan rule "Cafe")
                 if any(rule in loc.lower() for rule in allowed_places):
                     filtered.append(loc)
-            
-            # Jika ada hasil filter, gunakan itu. Jika kosong (misal target gak suka mall), 
-            # terpaksa kembali ke default (all_locations) tapi nanti diperingatkan.
-            if filtered:
-                final_locations = filtered
+            if filtered: final_locations = filtered
 
-        # Hitung Frekuensi dari lokasi yang SUDAH DIFIFFER
         from collections import Counter
-        if not final_locations: return pd.DataFrame() # Safety check
+        if not final_locations: return pd.DataFrame()
         
+        # Lokasi Generik dari Survey (Contoh: "Art Gallery")
         most_common_loc = Counter(final_locations).most_common(1)[0][0]
         
-        # 3. MAPPING KE KOORDINAT
-        query_gps = f"SELECT * FROM dim_gps WHERE '{most_common_loc.lower()}' LIKE '%' || lower(nama_tempat) || '%'"
+        # 3. MAPPING KE KOORDINAT OSM
+        cat_map = {
+            'Intellectual': ['library', 'book_shop', 'university', 'college'],
+            'Social': ['cafe', 'restaurant', 'fast_food', 'mall', 'clothing'],
+            'Sporty': ['gym', 'park', 'pitch', 'stadium'],
+            'Creative': ['arts_centre', 'gallery', 'cafe'], # Cafe jadi backup Creative
+            'Religius': ['place_of_worship', 'mosque'],
+            'Techie': ['cafe', 'coworking_space']
+        }
+        relevant_cats = cat_map.get(best_archetype, ['cafe', 'restaurant'])
+        cat_sql = "', '".join(relevant_cats)
+
+        query_gps = f"""
+            SELECT * FROM dim_gps 
+            WHERE lower(nama_tempat) LIKE '%' || lower('{most_common_loc}') || '%'
+            OR lower('{most_common_loc}') LIKE '%' || lower(nama_tempat) || '%'
+            LIMIT 1
+        """
         df_gps = con.execute(query_gps).df()
         
+        # --- PERBAIKAN DI SINI ---
+        display_name = most_common_loc # Default awal
+        
         if not df_gps.empty:
+            # SKENARIO 1: Ketemu Nama Persis
             lat, lon = df_gps.iloc[0]['lat'], df_gps.iloc[0]['lon']
             final_loc_name = df_gps.iloc[0]['nama_tempat']
+            display_name = final_loc_name # Update display jadi nama spesifik
         else:
-            lat, lon = -3.316694, 114.590111
-            final_loc_name = most_common_loc
+            # SKENARIO 2: Nama Gak Ketemu, Cari Backup Kategori
+            query_backup = f"""
+                SELECT * FROM dim_gps 
+                WHERE kategori IN ('{cat_sql}') 
+                ORDER BY random() 
+                LIMIT 1
+            """
+            df_backup = con.execute(query_backup).df()
+            
+            if not df_backup.empty:
+                lat, lon = df_backup.iloc[0]['lat'], df_backup.iloc[0]['lon']
+                real_osm_name = df_backup.iloc[0]['nama_tempat']
+                
+                # Judul Besar: "Starbucks (Rekomendasi Creative)"
+                final_loc_name = f"{real_osm_name} (Rekomendasi {best_archetype})"
+                
+                # Lokasi Kecil: "Starbucks" (Bukan "Art Gallery" lagi)
+                display_name = real_osm_name 
+            else:
+                # SKENARIO 3: Nyerah (Pusat Kota)
+                lat, lon = -3.3194, 114.5928
+                final_loc_name = f"{most_common_loc} (Area Umum)"
+                display_name = most_common_loc
 
         # 4. SUSUN HASIL
         hasil = [{
             "Profil": f"Tipe {best_archetype}",
             "Skor": scores[best_archetype],
-            "Lokasi_Nama": final_loc_name,
-            "Lokasi_Full": most_common_loc,
+            "Lokasi_Nama": final_loc_name,   # Judul Besar
+            "Lokasi_Full": display_name,     # FIX: Menampilkan nama tempat spesifik
             "lat": lat,
             "lon": lon,
             "Match": ciri_input
