@@ -6,6 +6,7 @@ import pytz
 import os
 import io
 from datetime import datetime
+from dotenv import load_dotenv
 
 # ==========================================
 # 1. KONFIGURASI & SYSTEM CHECK
@@ -31,7 +32,15 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-API_KEY_CUACA = "3eb5b834d98ca8ba49d53ac0c3a83569" 
+load_dotenv()
+
+# Mengambil API Key secara aman
+API_KEY_CUACA = os.getenv("API_KEY_CUACA")
+
+# Pengecekan (Opsional: agar tidak error kalau lupa bikin .env)
+if not API_KEY_CUACA:
+    st.error("⚠️ API Key Cuaca belum disetting di file .env")
+    st.stop()
 KOTA = "Banjarmasin"
 DB_FILE = "social_radar_olap.duckdb"
 

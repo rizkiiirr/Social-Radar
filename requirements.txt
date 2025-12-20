@@ -4,3 +4,4 @@ duckdb
 requests
 pyarrow
 fastparquet
+python-dotenv
