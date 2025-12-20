@@ -1,0 +1,6 @@
+streamlit
+pandas
+duckdb
+requests
+pyarrow
+fastparquet
