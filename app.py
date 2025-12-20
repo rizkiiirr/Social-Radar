@@ -407,11 +407,32 @@ else:
                 </div>
             """, unsafe_allow_html=True)
             
-            # UI Peta
+            # UI Peta & Navigasi
             cm, cd = st.columns([2, 1])
+            
             with cm:
                 st.subheader(f"📍 Radar: {top['Lokasi_Nama']}")
+                
+                # 1. Tampilkan Peta
                 st.map(pd.DataFrame({'lat': [top['lat']], 'lon': [top['lon']]}))
+                
+                # --- TAMBAHAN BARU ---
+                # 2. Tampilkan Koordinat Teks
+                st.caption(f"📌 Koordinat GPS: {top['lat']}, {top['lon']}")
+                
+                # 3. Tombol Link ke Google Maps
+                # Membuat URL dinamis berdasarkan latitude & longitude target
+                link_gmaps = f"https://www.google.com/maps?q={top['lat']},{top['lon']}"
+                
+                # Menampilkan tombol merah yang bisa diklik
+                st.link_button(
+                    label="🚀 Buka Rute di Google Maps", 
+                    url=link_gmaps, 
+                    type="primary",      # Membuat tombol berwarna menonjol
+                    use_container_width=True
+                )
+                # ---------------------
+
             with cd:
                 st.subheader("📋 Match Traits")
                 for t in top['Match']:
