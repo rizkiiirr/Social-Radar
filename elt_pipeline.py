@@ -8,10 +8,12 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 RAW_SOURCE = BASE_DIR  # File CSV ada di root folder
 LAKE_BRONZE = os.path.join(BASE_DIR, 'datalake', 'bronze')
 LAKE_SILVER = os.path.join(BASE_DIR, 'datalake', 'silver')
+LAKE_GOLD = os.path.join(BASE_DIR, 'datalake', 'gold')
 
 # Buat folder jika belum ada
 os.makedirs(LAKE_BRONZE, exist_ok=True)
 os.makedirs(LAKE_SILVER, exist_ok=True)
+os.makedirs(LAKE_GOLD, exist_ok=True)
 
 def clean_csv_quotes(file_path):
     """Membersihkan formatting CSV yang error (Double Quote issue)"""
@@ -38,7 +40,7 @@ def run_elt():
     print("🚀 MEMULAI PROSES ELT (Extract - Load - Transform)...")
 
     # --- 1. EXTRACT & LOAD (Pindahkan Raw ke Bronze) ---
-    files = ['hasil_survey.csv', 'social_time_rules.csv']
+    files = ['hasil_survey.csv', 'social_time_rules.csv', 'lokasi_bjm.json']
     for f in files:
         src = os.path.join(RAW_SOURCE, f)
         dst = os.path.join(LAKE_BRONZE, f)
@@ -99,6 +101,16 @@ def run_elt():
         save_path_rules = os.path.join(LAKE_SILVER, 'rules_data.parquet')
         df_rules.to_parquet(save_path_rules, index=False)
         print(f"✅ [SUCCESS] Social Rules tersimpan di: {save_path_rules}")
+    
+    # --- 3. GOLD LAYER (Final Aggregation) ---
+    # Contoh: Menyimpan df_clean atau df_rules sebagai tabel Gold
+    print("🏆 [GOLD] Menciptakan Gold Layer untuk Dashboard...")
+    save_path_gold = os.path.join(LAKE_GOLD, 'locations.parquet')
+    
+    # Menggunakan df_clean (hasil transformasi survey) untuk Gold Layer
+    if 'df_clean' in locals():
+        df_clean.to_parquet(save_path_gold, index=False)
+        print(f"✅ [SUCCESS] Gold Layer tersimpan di: {save_path_gold}")
 
     print("🏁 ELT SELESAI. SIAP UNTUK DASHBOARD.\n")
 

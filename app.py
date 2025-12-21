@@ -97,10 +97,15 @@ def init_db():
             UNION ALL SELECT 'Active', active_lokasi FROM tb_survey WHERE gender = 'Perempuan' AND active_lokasi IS NOT NULL
         """)
 
-        # --- C. LOAD DATA OSM JSON (INTEGRASI BARU) ---
-        if os.path.exists("lokasi_bjm.json"):
+        # --- C. LOAD DATA OSM JSON (DARI BRONZE LAYER) ---
+        # Tentukan path ke folder bronze
+        path_osm_bronze = os.path.join("datalake", "bronze", "lokasi_bjm.json")
+        
+        # Cek apakah file ada di bronze layer?
+        if os.path.exists(path_osm_bronze):
             import json
-            with open("lokasi_bjm.json", 'r', encoding='utf-8') as f:
+            # BACA DARI BRONZE, BUKAN ROOT
+            with open(path_osm_bronze, 'r', encoding='utf-8') as f:
                 data_osm = json.load(f)
             
             osm_places = []
