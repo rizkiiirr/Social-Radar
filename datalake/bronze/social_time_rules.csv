@@ -20,4 +20,4 @@ day_category,start_hour,end_hour,phase_name,status_kampus,status_sosial,rekomend
 "Sabtu,15.00,23.59,Malam Minggu,Tutup,Sangat Ramai,""Cafe, Mall, Taman Kota, Art Gallery, Taman Budaya, Pameran Lukisan"" "
 "Minggu,00.00,05.59,Jam Istirahat,Tutup,Sepi,""Rumah / Kost, Hotel"""
 "Minggu,06.00,10.00,Olahraga Pagi,Tutup,Ramai Outdoor,""Car Free Day, Jogging Track, Gym, Yoga Studio, Taman Kota"" "
-"Minggu,10.00,23.59,Family & Chill,Tutup,Ramai,""Mall, Hotel, Haulan Guru, Tempat Ibadah"""
+"Minggu,10.00,23.59,Family & Chill,Tutup,Ramai,""Hotel, Haulan Guru, Tempat Ibadah, Café, Gym, Toga Studio"""

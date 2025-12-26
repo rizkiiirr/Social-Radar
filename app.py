@@ -48,60 +48,43 @@ DB_FILE = "social_radar_olap.duckdb"
 # 2. FUNGSI INISIALISASI DATABASE (AUTO-FIX)
 # ==========================================
 def init_db():
-    # Cek kelengkapan file
-    required_files = ["hasil_survey.csv", "social_time_rules.csv"]
-    for f in required_files:
-        if not os.path.exists(f):
-            st.error(f"❌ File {f} tidak ditemukan!")
-            st.stop()
+    # Path ke file Gold Layer yang dihasilkan oleh elt_pipeline.py
+    path_gold = os.path.join("datalake", "gold", "locations.parquet")
+    path_rules_silver = os.path.join("datalake", "silver", "rules_data.parquet")
+    path_osm_bronze = os.path.join("datalake", "bronze", "lokasi_bjm.json")
 
-    with st.spinner('⚙️ Membangun Ulang Database & Parsing Data OSM...'):
+    # Pastikan pipeline sudah dijalankan
+    if os.path.exists(path_gold):
+        st.toast(f"✅ Memuat data dari: {path_gold}") 
+    else:
+        st.error("❌ File Gold Layer tidak ditemukan!")
+
+    with st.spinner('⚙️ Sinkronisasi Database dari Gold Layer...'):
         con = duckdb.connect(DB_FILE)
         
-        # --- A. LOAD DATA SURVEY & RULES (Tetap Sama) ---
-        with open("hasil_survey.csv", "r", encoding='utf-8') as f:
-            lines = f.readlines()
-        cleaned = [l.strip()[1:-1].replace('""', '"') if l.strip().startswith('"') else l.strip() for l in lines]
-        con.register('temp_survey', pd.read_csv(io.StringIO("\n".join(cleaned))))
-        con.execute("CREATE OR REPLACE TABLE tb_survey AS SELECT * FROM temp_survey")
-
-        with open("social_time_rules.csv", "r", encoding='utf-8') as f:
-            lines_r = f.readlines()
-        cleaned_r = [l.strip()[1:-1].replace('""', '"') if l.strip().startswith('"') else l.strip() for l in lines_r]
-        con.register('temp_rules', pd.read_csv(io.StringIO("\n".join(cleaned_r))))
-        con.execute("CREATE OR REPLACE TABLE tb_rules AS SELECT * FROM temp_rules")
-        
-        # Buat View Waktu
+        # --- A. LOAD DARI GOLD & SILVER LAYER (PARQUET) ---
+        # Kita tidak lagi membersihkan CSV di sini, tapi langsung baca Parquet
+        con.execute(f"CREATE OR REPLACE TABLE tb_survey AS SELECT * FROM read_parquet('{path_gold}')")
+        con.execute(f"CREATE OR REPLACE TABLE tb_rules AS SELECT * FROM read_parquet('{path_rules_silver}')")
         con.execute("CREATE OR REPLACE VIEW v_time_rules AS SELECT * FROM tb_rules")
 
-        # --- B. VIEW MAPPING & LOKASI PEREMPUAN (Tetap Sama) ---
+        # --- B. VIEW MAPPING (Gunakan nama kolom baru dari Silver/Gold) ---
+        # Di elt_pipeline, kita sudah me-rename 'intel_fisik_cowo' menjadi 'ciri_fisik'
         con.execute("""
-            CREATE OR REPLACE VIEW v_trait_mapping AS 
-            SELECT 'Intellectual' as archetype, intel_fisik_cowo as traits FROM tb_survey WHERE intel_fisik_cowo IS NOT NULL
-            UNION ALL SELECT 'Creative', creative_fisik_cowo FROM tb_survey WHERE creative_fisik_cowo IS NOT NULL
-            UNION ALL SELECT 'Social', social_fisik_cowo FROM tb_survey WHERE social_fisik_cowo IS NOT NULL
-            UNION ALL SELECT 'Sporty', sporty_fisik_cowo FROM tb_survey WHERE sporty_fisik_cowo IS NOT NULL
-            UNION ALL SELECT 'Techie', techie_fisik_cowo FROM tb_survey WHERE techie_fisik_cowo IS NOT NULL
-            UNION ALL SELECT 'Religius', relig_fisik_cowo FROM tb_survey WHERE relig_fisik_cowo IS NOT NULL
-            UNION ALL SELECT 'Active', active_fisik_cowo FROM tb_survey WHERE active_fisik_cowo IS NOT NULL
+        CREATE OR REPLACE VIEW v_trait_mapping AS 
+        SELECT archetype, ciri_fisik as traits 
+        FROM tb_survey 
+        WHERE ciri_fisik IS NOT NULL
         """)
 
         con.execute("""
-            CREATE OR REPLACE VIEW v_female_locations AS
-            SELECT 'Intellectual' as archetype, intel_lokasi as lokasi FROM tb_survey WHERE gender = 'Perempuan' AND intel_lokasi IS NOT NULL
-            UNION ALL SELECT 'Creative', creative_lokasi FROM tb_survey WHERE gender = 'Perempuan' AND creative_lokasi IS NOT NULL
-            UNION ALL SELECT 'Social', social_lokasi FROM tb_survey WHERE gender = 'Perempuan' AND social_lokasi IS NOT NULL
-            UNION ALL SELECT 'Sporty', sporty_lokasi FROM tb_survey WHERE gender = 'Perempuan' AND sporty_lokasi IS NOT NULL
-            UNION ALL SELECT 'Techie', techie_lokasi FROM tb_survey WHERE gender = 'Perempuan' AND techie_lokasi IS NOT NULL
-            UNION ALL SELECT 'Religius', relig_lokasi FROM tb_survey WHERE gender = 'Perempuan' AND relig_lokasi IS NOT NULL
-            UNION ALL SELECT 'Active', active_lokasi FROM tb_survey WHERE gender = 'Perempuan' AND active_lokasi IS NOT NULL
+        CREATE OR REPLACE VIEW v_female_locations AS
+        SELECT archetype, habitat_pilihan as lokasi 
+        FROM tb_survey 
+        WHERE gender = 'Perempuan' AND habitat_pilihan IS NOT NULL
         """)
 
-        # --- C. LOAD DATA OSM JSON (DARI BRONZE LAYER) ---
-        # Tentukan path ke folder bronze
-        path_osm_bronze = os.path.join("datalake", "bronze", "lokasi_bjm.json")
-        
-        # Cek apakah file ada di bronze layer?
+        # --- C. LOAD DATA OSM (Tetap sama) ---
         if os.path.exists(path_osm_bronze):
             import json
             # BACA DARI BRONZE, BUKAN ROOT
@@ -152,8 +135,8 @@ def init_db():
         # --- D. VIEW TRAITS ---
         con.execute("""
             CREATE OR REPLACE VIEW v_dim_traits AS
-            SELECT DISTINCT unnest(str_split(intel_fisik_cowo, ', ')) as nilai 
-            FROM tb_survey WHERE intel_fisik_cowo IS NOT NULL
+            SELECT DISTINCT unnest(str_split(ciri_fisik, ', ')) as nilai 
+            FROM tb_survey WHERE ciri_fisik IS NOT NULL
         """)
 
         con.close()
@@ -209,30 +192,34 @@ def get_time_context():
 def cari_target(ciri_input, context_waktu=None):
     con = get_db()
     try:
-        # 1. IDENTIFIKASI ARCHETYPE
-        df_traits = con.execute("SELECT * FROM v_trait_mapping").df()
+        # 1. IDENTIFIKASI ARCHETYPE (Query ke View yang sudah diperbarui)
+        df_traits = con.execute("SELECT archetype, traits FROM v_trait_mapping").df()
         scores = {}
+        input_traits = [x.lower().strip() for x in ciri_input]
+
         for _, row in df_traits.iterrows():
-            archetype = row['archetype']
-            db_traits = [x.strip().lower() for x in str(row['traits']).split(',')]
-            input_traits = [x.lower() for x in ciri_input]
-            match_count = len(set(db_traits).intersection(input_traits))
+            arch = row['archetype']
+            db_traits = str(row['traits']).lower()
+            
+            # Hitung seberapa banyak ciri yang dipilih user ada di baris ini
+            match_count = sum(1 for trait in input_traits if trait in db_traits)
+            
             if match_count > 0:
-                scores[archetype] = scores.get(archetype, 0) + match_count
+                scores[arch] = scores.get(arch, 0) + match_count
         
         if not scores: return pd.DataFrame()
         best_archetype = max(scores, key=scores.get)
         
         # 2. CARI LOKASI PEREMPUAN
-        query_loc = f"SELECT lokasi FROM v_female_locations WHERE archetype = '{best_archetype}'"
+        query_loc = f"SELECT habitat_pilihan FROM tb_survey WHERE archetype = '{best_archetype}'"
         df_loc_raw = con.execute(query_loc).df()
-        
-        if df_loc_raw.empty: return pd.DataFrame()
             
         all_locations = []
-        for raw in df_loc_raw['lokasi']:
-            items = [x.strip() for x in str(raw).split(',')]
-            all_locations.extend(items)
+
+        if not df_loc_raw.empty: 
+            for loc_str in df_loc_raw['habitat_pilihan']:
+                items = [x.strip() for x in str(loc_str).split(',') if x.strip()]
+                all_locations.extend(items)
             
         # LOGIC FILTER WAKTU
         final_locations = all_locations 
@@ -245,19 +232,20 @@ def cari_target(ciri_input, context_waktu=None):
             if filtered: final_locations = filtered
 
         from collections import Counter
+        import random
+
         if not final_locations: return pd.DataFrame()
         
-        # Lokasi Generik dari Survey (Contoh: "Art Gallery")
-        most_common_loc = Counter(final_locations).most_common(1)[0][0]
-        
+        counts = Counter(all_locations).most_common(3)        # Lokasi Generik dari Survey (Contoh: "Art Gallery")
+        most_common_loc = random.choice(counts)[0]        
         # 3. MAPPING KE KOORDINAT OSM
         cat_map = {
             'Intellectual': ['library', 'book_shop', 'university', 'college'],
             'Social': ['cafe', 'restaurant', 'fast_food', 'mall', 'clothing'],
             'Sporty': ['gym', 'park', 'pitch', 'stadium'],
-            'Creative': ['arts_centre', 'gallery', 'cafe'], # Cafe jadi backup Creative
-            'Religius': ['place_of_worship', 'mosque'],
-            'Techie': ['cafe', 'coworking_space']
+            'Creative': ['arts_centre', 'gallery', 'cafe', 'museum'],
+            'Active': ['university', 'office', 'park'],
+            'Professional/Active': ['office', 'bank', 'cafe']
         }
         relevant_cats = cat_map.get(best_archetype, ['cafe', 'restaurant'])
         cat_sql = "', '".join(relevant_cats)
